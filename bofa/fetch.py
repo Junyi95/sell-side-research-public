@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import aiofiles
 import aiohttp
+import fitz
 import httpx
 import pandas as pd
 import requests
@@ -322,8 +323,15 @@ def better_search_bofa_global_research(
     big_df = big_df.drop_duplicates(subset="documentKey", keep="first")
     if xlsx_path:
         big_df.to_excel(xlsx_path, index=False)
-    
+
     return big_df
+
+
+def sanitize_pdf_metadata(file_path):
+    doc = fitz.open(file_path)
+    doc.set_metadata({})
+    doc.save(file_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+    doc.close()
 
 
 def bofa_download_reports(
@@ -332,6 +340,7 @@ def bofa_download_reports(
     # base_ml_cookies: Dict[str, str],
     # session_cookies: Dict[str, str],
     base_path: str = os.getcwd() + r"\reports",
+    sanitize=False,
     verbose=False,
 ):
     df["documentDate"] = pd.to_datetime(df["documentDate"]).dt.strftime("%Y-%m-%d")
@@ -403,6 +412,7 @@ def bofa_download_reports(
                     print(
                         f"Content appears to be HTML by inspection, not downloading - {doc_info.documentDate} - {doc_info.headline}"
                     )
+                    print(response.content)
                 return
 
             chunk_size = 1024 * 1024
@@ -417,7 +427,9 @@ def bofa_download_reports(
                     else None
                 )
 
-            print("Fetch Finished") if verbose else None
+            if sanitize:
+                sanitize_pdf_metadata(file_path)
+                print(f"{file_path} Sanitized") if verbose else None
 
         except Exception as e:
             print(e)
