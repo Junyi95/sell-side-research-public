@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import os
 import re
 from dataclasses import dataclass
@@ -8,12 +9,12 @@ from urllib.parse import quote
 
 import aiofiles
 import aiohttp
-import fitz
 import httpx
 import pandas as pd
 import requests
 import ujson as json
 from pandas.tseries.offsets import BDay
+from PyPDF2 import PdfReader, PdfWriter
 
 pd.options.mode.chained_assignment = None
 
@@ -327,11 +328,42 @@ def better_search_bofa_global_research(
     return big_df
 
 
-def sanitize_pdf_metadata(file_path):
-    doc = fitz.open(file_path)
-    doc.set_metadata({})
-    doc.save(file_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
-    doc.close()
+def sanitize_pdf_metadata(input_file: str, fields_to_remove: List[str] = None):
+    try:
+        reader = PdfReader(input_file)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+
+        metadata = reader.metadata
+        if metadata is not None:
+            if not fields_to_remove:
+                fields_to_remove = list(metadata.keys())
+            for field in fields_to_remove:
+                if field in metadata:
+                    del metadata[field]
+            writer.metadata = metadata
+
+        temp_file = input_file + ".tmp"
+        with open(temp_file, "wb") as out:
+            writer.write(out)
+
+        os.replace(temp_file, input_file)
+    except Exception as e:
+        print(f"{input_file} Failed to Sanitize")
+
+
+def delete_temp_files(directory, verbose=False):
+    pattern = os.path.join(directory, "*.pdf.tmp")
+    temp_files = glob.glob(pattern)
+
+    for file in temp_files:
+        try:
+            os.remove(file)
+            if verbose:
+                print(f"Deleted: {file}")
+        except Exception as e:
+            print(f"Error deleting {file}: {e}")
 
 
 def bofa_download_reports(
@@ -342,6 +374,7 @@ def bofa_download_reports(
     base_path: str = os.getcwd() + r"\reports",
     sanitize=False,
     verbose=False,
+    run_clean_up=False,
 ):
     df["documentDate"] = pd.to_datetime(df["documentDate"]).dt.strftime("%Y-%m-%d")
     df["headline"] = df["headline"].apply(
@@ -378,6 +411,8 @@ def bofa_download_reports(
         "Upgrade-Insecure-Requests": "1",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     }
+    
+    # sanitization_failed = False
 
     async def fetch(client: httpx.AsyncClient, doc_info: DocumentInfo):
         try:
@@ -427,12 +462,16 @@ def bofa_download_reports(
                     else None
                 )
 
-            if sanitize:
-                sanitize_pdf_metadata(file_path)
-                print(f"{file_path} Sanitized") if verbose else None
+                # if sanitize:
+                #     try:
+                #         sanitize_pdf_metadata(file_path)
+                #         print(f"{file_path} Sanitized") if verbose else None
+                #     except Exception as e:
+                #         sanitization_failed = True
+                #         print(f"{file_path} Failed to Sanitize")
 
         except Exception as e:
-            print(e)
+            print(f"Error in {doc_info.reportLink} --- {e}")
 
     async def run_fetch_all():
         async with httpx.AsyncClient(cookies=cookies, headers=headers) as client:
@@ -440,3 +479,18 @@ def bofa_download_reports(
             await asyncio.gather(*tasks)
 
     asyncio.run(run_fetch_all())
+    
+    if sanitize:
+        for dd in documents_dict:
+            full_path = os.path.join(base_path, dd.documentDate)
+            pattern = os.path.join(full_path, "*.pdf")
+            files = glob.glob(pattern)
+            print(" files  ", files)
+            [sanitize_pdf_metadata(file) for file in files]
+    
+    if run_clean_up:
+        print("in clean up")
+        for dd in documents_dict:
+            full_path = os.path.join(base_path, dd.documentDate)
+            delete_temp_files(full_path, verbose=verbose)
+            
